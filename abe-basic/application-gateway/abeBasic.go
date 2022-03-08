@@ -95,9 +95,9 @@ func main() {
         client.WithSign(sign),
         client.WithClientConnection(clientConnection),
         // Default timeouts for different gRPC calls
-        client.WithEvaluateTimeout(2*time.Second),
-        client.WithEndorseTimeout(10*time.Second),
-        client.WithSubmitTimeout(2*time.Second),
+        client.WithEvaluateTimeout(5*time.Second),
+        client.WithEndorseTimeout(15*time.Second),
+        client.WithSubmitTimeout(5*time.Second),
         client.WithCommitStatusTimeout(1*time.Minute),
     )
     if err != nil {
@@ -312,7 +312,7 @@ func createAsset(dataContract *client.Contract, keyContract *client.Contract, po
     fmt.Printf("*** Transaction committed successfully\n")
 }
 
-// Evaluate a transaction by assetID to query ledger state.
+// Evaluate a transaction by assetID and user's policy.
 func readAssetByID(dataContract *client.Contract, keyContract *client.Contract, assetId string, abeAuthKeys *abe.AuthKeys, userPolicy string, user string) {
     fmt.Println("===================================================")
     fmt.Printf("Evaluate Transaction: ReadAsset, function returns asset attributes\n")
@@ -341,7 +341,6 @@ func readAssetByID(dataContract *client.Contract, keyContract *client.Contract, 
     
     userAttrs := abe.NewRandomUserkey(user, userPolicy, abeAuthKeys.AuthPrv)
     userAttrs.SelectUserAttrs(user, policies[key.Policy])
-    //fmt.Println(abe.JsonObjToStr(abeKeyList[key.Policy].ToJsonObj()), abe.JsonObjToStr(userAttrs.ToJsonObj()))
     secret := abe.Decrypt(abeKeyList[key.Policy], userAttrs)
     if abeKeyHashList[key.Policy] != abe.SecretHash(secret) {
         fmt.Printf("*** Cannot decrypt %s, need %s\n", assetId, policies[key.Policy])
@@ -490,7 +489,6 @@ func abeKeyGenAndEncrypt(policy string, pub *rsa.PublicKey, org *abe.Org, authKe
     }
     ct := abe.Encrypt(secret, policy, authPubs)
     abeKeyList = append(abeKeyList, ct)
-    //fmt.Println(abe.JsonObjToStr(ct.ToJsonObj())) 
     
     plain := publicKeyToString(pub)
     return encryptWithABESecret(plain, secret)
