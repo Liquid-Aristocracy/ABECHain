@@ -1,7 +1,7 @@
 package abeData
 
 import (
-	"encoding/base64"
+	//"encoding/base64"
 	"encoding/json"
 	"fmt"
 
@@ -63,7 +63,7 @@ func (s *SmartContract) ReadAsset(ctx contractapi.TransactionContextInterface, i
 }
 
 // UpdateAsset updates an existing asset in the world state with provided parameters.
-func (s *SmartContract) UpdateAsset(ctx contractapi.TransactionContextInterface, id string, content string, policy int) error {
+func (s *SmartContract) UpdateAsset(ctx contractapi.TransactionContextInterface, id string, key string, policy int) error {
 	exists, err := s.AssetExists(ctx, id)
 	if err != nil {
 		return err

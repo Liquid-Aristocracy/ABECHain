@@ -8,7 +8,7 @@ import (
 )
 
 func main() {
-	abeKEySmartContract, err := contractapi.NewChaincode(&abeKey.SmartContract{})
+	abeKeySmartContract, err := contractapi.NewChaincode(&abeKey.SmartContract{})
 	if err != nil {
 		log.Panicf("Error creating abe-basic chaincode: %v", err)
 	}

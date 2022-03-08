@@ -8,17 +8,17 @@ package main
 
 import (
     "bytes"
-    "context"
+    //"context"
     "crypto/x509"
     "encoding/json"
-    "errors"
+    //"errors"
     "fmt"
     "github.com/hyperledger/fabric-gateway/pkg/client"
     "github.com/hyperledger/fabric-gateway/pkg/identity"
-    gwproto "github.com/hyperledger/fabric-protos-go/gateway"
+    //gwproto "github.com/hyperledger/fabric-protos-go/gateway"
     "google.golang.org/grpc"
     "google.golang.org/grpc/credentials"
-    "google.golang.org/grpc/status"
+    //"google.golang.org/grpc/status"
     "io/ioutil"
     "log"
     "path"
@@ -27,15 +27,18 @@ import (
     "github.com/marcellop71/mosaic/abe"
     "github.com/mervick/aes-everywhere/go/aes256"
     "github.com/brianvoe/gofakeit/v6"
+    "crypto"
     "crypto/rsa"
-    "crypto/rand"
+    "math/rand"
+    crand "crypto/rand"
     "encoding/pem"
     "encoding/base64"
+    "math/big"
 )
 
 const (
     mspID           = "Org1MSP"
-    cryptoPath      = "../../test-network/organizations/peerOrganizations/org1.example.com"
+    cryptoPath      = "../../../fabric-samples/test-network/organizations/peerOrganizations/org1.example.com"
     certPath        = cryptoPath + "/users/User1@org1.example.com/msp/signcerts/cert.pem"
     keyPath         = cryptoPath + "/users/User1@org1.example.com/msp/keystore/"
     tlsCertPath     = cryptoPath + "/peers/peer0.org1.example.com/tls/ca.crt"
@@ -49,15 +52,15 @@ const (
 
 var assetIdList = []string{}
 var policies = []string{
-    "A@Auth0",
-    "B@Auth0",
-    "A@Auth0 \\/ B@Auth0",
-    "A@Auth0 /\\ B@Auth0",
-    "B@Auth0 \\/ (A@Auth0 /\\ C@Auth0)",
-    "B@Auth0 \\/ ((A@Auth0 /\\ C@Auth0) \\/ A@Auth0)",
-    "C@Auth0",
+    "A@auth0",
+    "B@auth0",
+    "A@auth0 \\/ B@auth0",
+    "A@auth0 /\\ B@auth0",
+    "B@auth0 \\/ (A@auth0 /\\ C@auth0)",
+    "(B@auth0 /\\ C@auth0) \\/ A@auth0",
+    "C@auth0",
 }
-var abeKeyList = []*Ciphertext{}
+var abeKeyList = [](*abe.Ciphertext){}
 var abeKeyHashList = []string{}
 
 type PlainData struct {
@@ -92,9 +95,9 @@ func main() {
         client.WithSign(sign),
         client.WithClientConnection(clientConnection),
         // Default timeouts for different gRPC calls
-        client.WithEvaluateTimeout(5*time.Second),
-        client.WithEndorseTimeout(15*time.Second),
-        client.WithSubmitTimeout(5*time.Second),
+        client.WithEvaluateTimeout(2*time.Second),
+        client.WithEndorseTimeout(10*time.Second),
+        client.WithSubmitTimeout(2*time.Second),
         client.WithCommitStatusTimeout(1*time.Minute),
     )
     if err != nil {
@@ -104,8 +107,8 @@ func main() {
 
     dataNetwork := gateway.GetNetwork(dataChannelName)
     keyNetwork := gateway.GetNetwork(keyChannelName)
-    dataContract := network.GetContract(dataCCName)
-    keyContract := network.GetContract(keyCCName)
+    dataContract := dataNetwork.GetContract(dataCCName)
+    keyContract := keyNetwork.GetContract(keyCCName)
     
     // Init ABE org
     abeSeed := "this-is-some-random-thing-for-org1-idk"
@@ -118,11 +121,11 @@ func main() {
     gofakeit.Seed(0)
 
     fmt.Println("initLedger:")
-    initLedger(dataContract, keyContract, &abeOrg, &abeAuthKeys)
+    initLedger(dataContract, keyContract, abeOrg, abeAuthKeys)
     
     // Init ABE user
-    userAttrs := abe.NewRandomUserkey(gatewayPeer, "A@Auth0", abeAuthKeys.AuthPrv)
-    userAttrs.SelectUserAttrs(gatewayPeer, "A@Auth0")
+    userAttrs := abe.NewRandomUserkey(gatewayPeer, "A@auth0", abeAuthKeys.AuthPrv)
+    userAttrs.SelectUserAttrs(gatewayPeer, "A@auth0")
     secret := abe.Decrypt(abeKeyList[0], userAttrs)
     if abeKeyHashList[0] != abe.SecretHash(secret) {
         panic(fmt.Errorf("failed to get secret key of user policy"))
@@ -133,21 +136,15 @@ func main() {
 
     fmt.Println("createAsset:")
     createAsset(dataContract, keyContract, 0, secret)
+    userAttrs.Coeff["A@auth0"] = make([]int, 0)
     
     fmt.Println("getAllAssets:")
     getAllAssets(dataContract, keyContract)
-
-    fmt.Println("readAssetByID:")
-    readAssetByID(dataContract, keyContract, assetIdList[0], userAttrs, gatewayPeer)
     
-    fmt.Println("readAssetByID:")
-    readAssetByID(dataContract, keyContract, assetIdList[1], userAttrs, gatewayPeer)
-    
-    fmt.Println("readAssetByID:")
-    readAssetByID(dataContract, keyContract, assetIdList[3], userAttrs, gatewayPeer)
-    
-    fmt.Println("readAssetByID:")
-    readAssetByID(dataContract, keyContract, assetIdList[4], userAttrs, gatewayPeer)
+    for i, _ := range policies {
+        fmt.Printf("readAssetByID: %s\n", assetIdList[i])
+        readAssetByID(dataContract, keyContract, assetIdList[i], abeAuthKeys, "A@auth0", gatewayPeer)
+    }
 
     log.Println("============ application-golang ends ============")
 }
@@ -224,6 +221,7 @@ func newSign() identity.Sign {
  initial deployment. A new version of the chaincode deployed later would likely not need to run an "init" function.
 */
 func initLedger(dataContract *client.Contract, keyContract *client.Contract, abeOrg *abe.Org, abeAuthKeys *abe.AuthKeys) {
+    fmt.Println("===================================================")
     fmt.Printf("Submit Multiple Transactions to init Ledger: function creates the initial set of assets on the ledger based on policies \n")
 
     for i, policy := range policies {
@@ -231,23 +229,24 @@ func initLedger(dataContract *client.Contract, keyContract *client.Contract, abe
         now := time.Now()
         assetId := fmt.Sprintf("asset%d", now.Unix()*1e3+int64(now.Nanosecond())/1e6)
         assetData := assetGen()
-        privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+        privateKey, err := rsa.GenerateKey(crand.Reader, 2048)
         if err != nil {
             panic(fmt.Errorf("failed to generate conversation key: %w", err))
         }
-        publicKey := &privatekey.PublicKey
+        publicKey := &privateKey.PublicKey
         
         dataJson, err := json.Marshal(assetData)
-        fmt.Println(assetId, dataJson)
+        fmt.Println(assetId, string(dataJson[:]))
         if err != nil {
             panic(fmt.Errorf("failed to convert data to json: %w", err))
         }
-        dataCipher := rsaPrivateEncrypt(dataJson, privateKey)
+        dataCipher := rsaPrivateEncrypt(string(dataJson[:]), privateKey)
         
         encryptedConvKey := abeKeyGenAndEncrypt(policy, publicKey, abeOrg, abeAuthKeys)
+        assetIdList = append(assetIdList, assetId)
         
-        _, err := dataContract.SubmitTransaction("CreateAsset", assetId, dataCipher)
-        _, err := keyContract.SubmitTransaction("CreateAsset", assetId, encryptedConvKey, i)
+        _, err = dataContract.SubmitTransaction("CreateAsset", assetId, dataCipher)
+        _, err = keyContract.SubmitTransaction("CreateAsset", assetId, encryptedConvKey, fmt.Sprint(i))
         if err != nil {
             panic(fmt.Errorf("failed to submit transaction: %w", err))
         }
@@ -259,6 +258,7 @@ func initLedger(dataContract *client.Contract, keyContract *client.Contract, abe
 
 // Evaluate a transaction to query ledger state.
 func getAllAssets(dataContract *client.Contract, keyContract *client.Contract) {
+    fmt.Println("===================================================")
     fmt.Println("Evaluate Transaction: GetAllAssets, function prints all the current assets on both ledger")
 
     dataEvaluateResult, err := dataContract.EvaluateTransaction("GetAllAssets")
@@ -267,7 +267,7 @@ func getAllAssets(dataContract *client.Contract, keyContract *client.Contract) {
     }
     dataResult := formatJSON(dataEvaluateResult)
 
-    fmt.Printf("*** Data result:%s\n", dataResult)
+    fmt.Printf("\n*** Data result:%s\n", dataResult)
     
     keyEvaluateResult, err := keyContract.EvaluateTransaction("GetAllAssets")
     if err != nil {
@@ -275,33 +275,36 @@ func getAllAssets(dataContract *client.Contract, keyContract *client.Contract) {
     }
     keyResult := formatJSON(keyEvaluateResult)
 
-    fmt.Printf("*** Data result:%s\n", keyResult)
+    fmt.Printf("\n*** Key result:%s\n", keyResult)
 }
 
 // Submit a transaction synchronously, blocking until it has been committed to the ledger.
 func createAsset(dataContract *client.Contract, keyContract *client.Contract, policy int, abeSecret abe.Point) {
+    fmt.Println("===================================================")
     fmt.Printf("Submit Transaction: CreateAsset, creates new asset with a sentence and count \n")
     
     now := time.Now()
     assetId := fmt.Sprintf("asset%d", now.Unix()*1e3+int64(now.Nanosecond())/1e6)
     assetData := assetGen()
-    privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+    privateKey, err := rsa.GenerateKey(crand.Reader, 2048)
     if err != nil {
         panic(fmt.Errorf("failed to generate conversation key: %w", err))
     }
-    publicKey := &privatekey.PublicKey
+    publicKey := &privateKey.PublicKey
     
     dataJson, err := json.Marshal(assetData)
-    fmt.Println(assetId, dataJson)
+    fmt.Println(assetId, string(dataJson[:]))
     if err != nil {
         panic(fmt.Errorf("failed to convert data to json: %w", err))
     }
-    dataCipher := rsaPrivateEncrypt(dataJson, privateKey)
+    dataCipher := rsaPrivateEncrypt(string(dataJson[:]), privateKey)
     
-    encryptedConvKey := encryptWithABESecret(publicKey, abeSecret)
+    publicKeyString := publicKeyToString(publicKey)
+    encryptedConvKey := encryptWithABESecret(publicKeyString, abeSecret)
+    assetIdList = append(assetIdList, assetId)
     
-    _, err := dataContract.SubmitTransaction("CreateAsset", assetId, dataCipher)
-    _, err := keyContract.SubmitTransaction("CreateAsset", assetId, encryptedConvKey)
+    _, err = dataContract.SubmitTransaction("CreateAsset", assetId, dataCipher)
+    _, err = keyContract.SubmitTransaction("CreateAsset", assetId, encryptedConvKey, "0")
     if err != nil {
         panic(fmt.Errorf("failed to submit transaction: %w", err))
     }
@@ -310,10 +313,11 @@ func createAsset(dataContract *client.Contract, keyContract *client.Contract, po
 }
 
 // Evaluate a transaction by assetID to query ledger state.
-func readAssetByID(dataContract *client.Contract, keyContract *client.Contract, assetId string, userAttrs abe.UserAttrs, user string) {
+func readAssetByID(dataContract *client.Contract, keyContract *client.Contract, assetId string, abeAuthKeys *abe.AuthKeys, userPolicy string, user string) {
+    fmt.Println("===================================================")
     fmt.Printf("Evaluate Transaction: ReadAsset, function returns asset attributes\n")
 
-    dataEevaluateResult, err := dataContract.EvaluateTransaction("ReadAsset", assetId)
+    dataEvaluateResult, err := dataContract.EvaluateTransaction("ReadAsset", assetId)
     if err != nil {
         panic(fmt.Errorf("failed to evaluate transaction: %w", err))
     }
@@ -324,7 +328,7 @@ func readAssetByID(dataContract *client.Contract, keyContract *client.Contract, 
         panic(fmt.Errorf("failed to parse data result: %w", err))
     }
     
-    keyEevaluateResult, err := keyContract.EvaluateTransaction("ReadAsset", assetId)
+    keyEvaluateResult, err := keyContract.EvaluateTransaction("ReadAsset", assetId)
     if err != nil {
         panic(fmt.Errorf("failed to evaluate transaction: %w", err))
     }
@@ -335,18 +339,22 @@ func readAssetByID(dataContract *client.Contract, keyContract *client.Contract, 
         panic(fmt.Errorf("failed to parse key result: %w", err))
     }
     
+    userAttrs := abe.NewRandomUserkey(user, userPolicy, abeAuthKeys.AuthPrv)
     userAttrs.SelectUserAttrs(user, policies[key.Policy])
+    //fmt.Println(abe.JsonObjToStr(abeKeyList[key.Policy].ToJsonObj()), abe.JsonObjToStr(userAttrs.ToJsonObj()))
     secret := abe.Decrypt(abeKeyList[key.Policy], userAttrs)
-    if abeKeyHashList[0] != abe.SecretHash(secret) {
-        fmt.Printf("*** Cannot decrypt %s, need %s", assetId, policies[key.Policy])
+    if abeKeyHashList[key.Policy] != abe.SecretHash(secret) {
+        fmt.Printf("*** Cannot decrypt %s, need %s\n", assetId, policies[key.Policy])
         return
+    } else {
+        fmt.Printf("*** Policy %s satisfied, %s readable\n", policies[key.Policy], assetId)
     }
     
     convKeyStr := decryptWithABESecret(key.Key, secret)
     convKey := stringToPublicKey(convKeyStr)
     result := rsaPublicDecrypt(data.Content, convKey)
     
-    resultToPrint := formatJSON(result)
+    resultToPrint := formatJSON([]byte(result))
     
     fmt.Printf("*** Result:%s\n", resultToPrint)
     return
@@ -363,7 +371,7 @@ func formatJSON(data []byte) string {
 
 // RSA private encryption used in conversation encryption
 func rsaPrivateEncrypt(secretMessage string, privKey *rsa.PrivateKey) string {
-    ciphertext, err := rsa.SignPKCS1v15(nil, priv, crypto.Hash(0), signedData) 
+    ciphertext, err := rsa.SignPKCS1v15(nil, privKey, crypto.Hash(0), []byte(secretMessage))
     if err != nil {
         panic(fmt.Errorf("failed to encrypt: %w", err))
     }
@@ -374,7 +382,11 @@ func rsaPrivateEncrypt(secretMessage string, privKey *rsa.PrivateKey) string {
 func rsaPublicDecrypt(cipherText string, pubKey *rsa.PublicKey) string {
     c := new(big.Int)
     m := new(big.Int)
-    m.SetBytes(base64.StdEncoding.DecodeString(cipherText))
+    decode, err := base64.StdEncoding.DecodeString(cipherText)
+    if err != nil {
+        panic(fmt.Errorf("failed to encode base64: %w", err))
+    }
+    m.SetBytes(decode)
     e := big.NewInt(int64(pubKey.E))
     c.Exp(m, e, pubKey.N)
     out := c.Bytes()
@@ -420,11 +432,13 @@ func publicKeyToString(pub *rsa.PublicKey) string {
 
 // string to private key
 func stringToPrivateKey(privStr string) *rsa.PrivateKey {
-    priv := base64.StdEncoding.DecodeString(privStr)
+    priv, err := base64.StdEncoding.DecodeString(privStr)
+    if err != nil {
+        panic(fmt.Errorf("failed to encode base64: %w", err))
+    }
     block, _ := pem.Decode(priv)
     enc := x509.IsEncryptedPEMBlock(block)
     b := block.Bytes
-    var err error
     if enc {
         b, err = x509.DecryptPEMBlock(block, nil)
         if err != nil {
@@ -440,11 +454,13 @@ func stringToPrivateKey(privStr string) *rsa.PrivateKey {
 
 // string to public key
 func stringToPublicKey(pubStr string) *rsa.PublicKey {
-    pub := base64.StdEncoding.DecodeString(pubStr)
+    pub, err := base64.StdEncoding.DecodeString(pubStr)
+    if err != nil {
+        panic(fmt.Errorf("failed to encode base64: %w", err))
+    }
     block, _ := pem.Decode(pub)
     enc := x509.IsEncryptedPEMBlock(block)
     b := block.Bytes
-    var err error
     if enc {
         b, err = x509.DecryptPEMBlock(block, nil)
         if err != nil {
@@ -463,7 +479,7 @@ func stringToPublicKey(pubStr string) *rsa.PublicKey {
 }
 
 // use policy to generate key and store it
-func abeKeyGenAndEncrypt(policy string, pub *rsa.PublicKey, org abe.Org, authKeys abe.AuthKeys) string {
+func abeKeyGenAndEncrypt(policy string, pub *rsa.PublicKey, org *abe.Org, authKeys *abe.AuthKeys) string {
     secret := abe.NewRandomSecret(org)
     abeKeyHashList = append(abeKeyHashList, abe.SecretHash(secret))
     
@@ -472,8 +488,9 @@ func abeKeyGenAndEncrypt(policy string, pub *rsa.PublicKey, org abe.Org, authKey
     for attr, _ := range authPubs.AuthPub {
         authPubs.AuthPub[attr] = authKeys.AuthPub
     }
-    ct := abe.Encrypt(secret, policy, authpubs)
+    ct := abe.Encrypt(secret, policy, authPubs)
     abeKeyList = append(abeKeyList, ct)
+    //fmt.Println(abe.JsonObjToStr(ct.ToJsonObj())) 
     
     plain := publicKeyToString(pub)
     return encryptWithABESecret(plain, secret)
@@ -489,7 +506,7 @@ func encryptWithABESecret(plain string, secret abe.Point) string {
 // use aes to decrypt conversation key with secret point
 func decryptWithABESecret(cipher string, secret abe.Point) string {
     password := secret.ToJsonObj().GetP()
-    decrypted := aes256.Decrypt(plain, password)
+    decrypted := aes256.Decrypt(cipher, password)
     return decrypted
 }
 
